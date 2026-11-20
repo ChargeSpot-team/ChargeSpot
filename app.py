@@ -175,7 +175,7 @@ def checkin(rid):
         r=db.execute('''SELECT r.*,c.status AS charger_status FROM reservations r JOIN chargers c ON c.id=r.charger_id WHERE r.id=? AND r.user_id=?''',(rid,g.user['id'])).fetchone()
         now = datetime.now(ZoneInfo("Asia/Riyadh")).replace(tzinfo=None)
         if not r or r['status'] != 'CONFIRMED' or r['charger_status'] != 'Available' or not (datetime.fromisoformat(r['start_at']) - timedelta(minutes=15) <= now <= datetime.fromisoformat(r['end_at'])):
-        flash('Check-in requires a confirmed reservation within its time window and an available charger.','danger')
+            flash('Check-in requires a confirmed reservation within its time window and an available charger.','danger')
         else:
             db.execute("UPDATE reservations SET status='ACTIVE' WHERE id=?",(rid,))
             db.execute("UPDATE chargers SET status='Occupied' WHERE id=?",(r['charger_id'],))
