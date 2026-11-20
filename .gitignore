@@ -1,0 +1,7 @@
+chargespot.db
+*.db-journal
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
