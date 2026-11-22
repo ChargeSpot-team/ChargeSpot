@@ -31,7 +31,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS charging_sessions(id INTEGER PRIMARY KEY, reservation_id INTEGER UNIQUE NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, energy_kwh REAL, total_cost REAL, FOREIGN KEY(reservation_id) REFERENCES reservations(id));
         ''')
         if not db.execute("SELECT 1 FROM users WHERE email='admin@chargespot.local'").fetchone():
-            db.execute('INSERT INTO users(name,email,password,role) VALUES(?,?,?,?)', ('System Admin','admin@chargespot.local',generate_password_hash(os.environ['ADMIN_PASSWORD']))
+            db.execute('INSERT INTO users(name,email,password,role) VALUES(?,?,?,?)', ('System Admin','admin@chargespot.local',generate_password_hash(os.environ['ADMIN_PASSWORD']),'admin'))
         if not db.execute('SELECT 1 FROM stations').fetchone():
             for name, location, price, connectors in [
                 ('Riyadh Central Charging','Olaya, Riyadh',1.25,['CCS2','Type 2']),
