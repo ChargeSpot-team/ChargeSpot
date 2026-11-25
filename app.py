@@ -1,5 +1,8 @@
 import os
 import sqlite3
+import math
+import threading
+import time
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 from functools import wraps
@@ -11,6 +14,9 @@ DB = os.path.join(BASE, 'chargespot.db')
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'development-only-change-me-before-deploying')
 
+
+def riyadh_now():
+    return datetime.now(ZoneInfo("Asia/Riyadh")).replace(tzinfo=None)
 
 def connect():
     db = sqlite3.connect(DB)
@@ -39,6 +45,30 @@ def init_db():
                 ('North Riyadh ChargeSpot','Al Malqa, Riyadh',1.40,['Type 2','CCS2'])]:
                 cur=db.execute('INSERT INTO stations(name,location,price) VALUES(?,?,?)',(name,location,price))
                 for c in connectors: db.execute('INSERT INTO chargers(station_id,connector) VALUES(?,?)',(cur.lastrowid,c))
+
+def finish_expired_sessions():
+    now=riyadh_now().isoformat(timespec='seconds')
+    with connect() as db:
+        db.execute('BEGIN IMMEDIATE')
+        rows=db.execute("""SELECT r.id,r.charger_id,r.end_at,cs.started_at,s.price FROM reservations r JOIN charging_sessions cs ON cs.reservation_id=r.id JOIN chargers c ON c.id=r.charger_id JOIN stations s ON s.id=c.station_id WHERE r.status='ACTIVE' AND r.end_at<=?""",(now,)).fetchall()
+        for r in rows:
+            hours=max(0,(datetime.fromisoformat(r['end_at'])-datetime.fromisoformat(r['started_at'])).total_seconds()/3600)
+            energy=round(hours*7,4)
+            db.execute('UPDATE charging_sessions SET ended_at=?,energy_kwh=?,total_cost=? WHERE reservation_id=?',(r['end_at'],energy,round(energy*r['price'],2),r['id']))
+            db.execute("UPDATE reservations SET status='COMPLETED' WHERE id=?",(r['id'],))
+            db.execute("UPDATE chargers SET status='Available' WHERE id=?",(r['charger_id'],))
+
+def expiry_worker():
+    while True:
+        try:
+            finish_expired_sessions()
+        except Exception:
+            app.logger.exception('Automatic checkout failed; will retry')
+        time.sleep(5)
+
+@app.before_request
+def reconcile_expired():
+    finish_expired_sessions()
 
 @app.before_request
 def load_user():
@@ -72,15 +102,33 @@ def driver_required(fn):
 
 @app.context_processor
 def helpers():
-    return {'now':datetime.now(), 'user':g.get('user')}
+    return {'now':riyadh_now(), 'user':g.get('user')}
 
 @app.route('/')
 def index():
+    search=request.args.get('q','').strip()
+    minimum=request.args.get('min_price','').strip()
+    maximum=request.args.get('max_price','').strip()
+    connector=request.args.get('connector','').strip()
+    clauses=["(?='' OR s.name LIKE ? OR s.location LIKE ?)"]
+    params=[search,f'%{search}%',f'%{search}%']
+    try:
+        lo=float(minimum) if minimum else None
+        hi=float(maximum) if maximum else None
+        if any(not math.isfinite(v) or v<0 for v in (lo,hi) if v is not None) or (lo is not None and hi is not None and lo>hi):
+            raise ValueError()
+        for value, op in ((lo,'>='),(hi,'<=')):
+            if value is not None:
+                clauses.append('s.price '+op+' ?');params.append(value)
+    except ValueError:
+        flash('Enter a valid price range.','warning');clauses.append('0')
+    if connector:
+        clauses.append('EXISTS (SELECT 1 FROM chargers f WHERE f.station_id=s.id AND f.connector=?)');params.append(connector)
     with connect() as db:
-        q='''SELECT s.*, COUNT(c.id) AS total, SUM(CASE WHEN c.status='Available' THEN 1 ELSE 0 END) AS available FROM stations s LEFT JOIN chargers c ON c.station_id=s.id WHERE (?='' OR s.name LIKE ? OR s.location LIKE ?) GROUP BY s.id ORDER BY s.id'''
-        search=request.args.get('q','').strip()
-        stations=db.execute(q,(search,f'%{search}%',f'%{search}%')).fetchall()
-    return render_template('index.html',stations=stations,search=search)
+        connectors=db.execute('SELECT DISTINCT connector FROM chargers ORDER BY connector').fetchall()
+        q="SELECT s.*, COUNT(c.id) AS total, SUM(CASE WHEN c.status='Available' THEN 1 ELSE 0 END) AS available FROM stations s LEFT JOIN chargers c ON c.station_id=s.id WHERE "+' AND '.join(clauses)+' GROUP BY s.id ORDER BY s.id'
+        stations=db.execute(q,params).fetchall()
+    return render_template('index.html',stations=stations,search=search,minimum=minimum,maximum=maximum,connector=connector,connectors=connectors)
 
 @app.route('/register',methods=['GET','POST'])
 def register():
@@ -136,7 +184,7 @@ def station(station_id):
 def reserve(charger_id):
     try:
         start=datetime.fromisoformat(request.form['start_at']);end=datetime.fromisoformat(request.form['end_at'])
-        if start<datetime.now()-timedelta(minutes=1) or end<=start or end-start>timedelta(hours=8): raise ValueError()
+        if start<riyadh_now()-timedelta(minutes=1) or end<=start or end-start>timedelta(hours=8): raise ValueError()
         vehicle_id=int(request.form['vehicle_id'])
     except (ValueError,KeyError): flash('Select a future time range (up to 8 hours) and a vehicle.','danger');return redirect(url_for('index'))
     with connect() as db:
@@ -149,8 +197,8 @@ def reserve(charger_id):
         if overlap:flash('This charger is already booked for that time.','danger');return redirect(url_for('station',station_id=c['station_id']))
         # Demonstration payment is simulated; no card information is collected.
         amount=round((end-start).total_seconds()/3600*c['price']*7,2)
-        cur=db.execute('INSERT INTO reservations(user_id,charger_id,start_at,end_at,status,amount,created_at) VALUES(?,?,?,?,?,?,?)',(g.user['id'],charger_id,start.isoformat(timespec='minutes'),end.isoformat(timespec='minutes'),'CONFIRMED',amount,datetime.now().isoformat(timespec='seconds')))
-        db.execute('INSERT INTO payments(reservation_id,amount,status,created_at) VALUES(?,?,?,?)',(cur.lastrowid,amount,'SIMULATED_APPROVED',datetime.now().isoformat(timespec='seconds')))
+        cur=db.execute('INSERT INTO reservations(user_id,charger_id,start_at,end_at,status,amount,created_at) VALUES(?,?,?,?,?,?,?)',(g.user['id'],charger_id,start.isoformat(timespec='minutes'),end.isoformat(timespec='minutes'),'CONFIRMED',amount,riyadh_now().isoformat(timespec='seconds')))
+        db.execute('INSERT INTO payments(reservation_id,amount,status,created_at) VALUES(?,?,?,?)',(cur.lastrowid,amount,'SIMULATED_APPROVED',riyadh_now().isoformat(timespec='seconds')))
     flash('Reservation confirmed. Demo payment approved.','success');return redirect(url_for('reservations'))
 
 @app.route('/reservations')
@@ -174,7 +222,7 @@ def checkin(rid):
         db.execute('BEGIN IMMEDIATE')
         r=db.execute('''SELECT r.*,c.status AS charger_status FROM reservations r JOIN chargers c ON c.id=r.charger_id WHERE r.id=? AND r.user_id=?''',(rid,g.user['id'])).fetchone()
         now = datetime.now(ZoneInfo("Asia/Riyadh")).replace(tzinfo=None)
-        if not r or r['status'] != 'CONFIRMED' or r['charger_status'] != 'Available' or not (datetime.fromisoformat(r['start_at']) - timedelta(minutes=15) <= now <= datetime.fromisoformat(r['end_at'])):
+        if not r or r['status'] != 'CONFIRMED' or r['charger_status'] != 'Available' or not (datetime.fromisoformat(r['start_at']) - timedelta(minutes=15) <= now < datetime.fromisoformat(r['end_at'])):
             flash('Check-in requires a confirmed reservation within its time window and an available charger.','danger')
         else:
             db.execute("UPDATE reservations SET status='ACTIVE' WHERE id=?",(rid,))
@@ -196,7 +244,7 @@ def checkout(rid):
         if not r or r['status']!='ACTIVE':flash('No active charging session.','danger')
         else:
             cost=round(energy*r['price'],2)
-            db.execute('UPDATE charging_sessions SET ended_at=?,energy_kwh=?,total_cost=? WHERE reservation_id=?',(datetime.now().isoformat(timespec='seconds'),energy,cost,rid))
+            db.execute('UPDATE charging_sessions SET ended_at=?,energy_kwh=?,total_cost=? WHERE reservation_id=?',(riyadh_now().isoformat(timespec='seconds'),energy,cost,rid))
             db.execute("UPDATE reservations SET status='COMPLETED' WHERE id=?",(rid,))
             db.execute("UPDATE chargers SET status='Available' WHERE id=?",(r['charger_id'],))
             flash(f'Session completed. Final energy cost: SAR {cost:.2f}.','success')
@@ -266,6 +314,8 @@ def delete_user(uid):
         else:
             db.execute('DELETE FROM vehicles WHERE user_id=?',(uid,));db.execute("DELETE FROM users WHERE id=? AND role='driver'",(uid,));flash('Driver account deleted.','success')
     return redirect(url_for('admin'))
-    init_db()
+
+init_db()
+threading.Thread(target=expiry_worker,daemon=True).start()
 if __name__=='__main__':
     app.run(debug=True,host='127.0.0.1',port=5000)
