@@ -23,11 +23,18 @@ app.secret_key = os.environ.get('SECRET_KEY', secrets.token_hex(32))
 def riyadh_now():
     return datetime.now(ZoneInfo("Asia/Riyadh")).replace(tzinfo=None)
 
+from contextlib import contextmanager
+
+@contextmanager
 def connect():
-    db = sqlite3.connect(DB)
-    db.row_factory = sqlite3.Row
-    db.execute('PRAGMA foreign_keys=ON')
-    return db
+    db = sqlite3.connect(DB, timeout=20)
+    try:
+        db.row_factory = sqlite3.Row
+        db.execute('PRAGMA foreign_keys=ON')
+        with db:
+            yield db
+    finally:
+        db.close()
 
 
 def init_db():
