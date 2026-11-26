@@ -78,9 +78,6 @@ def expiry_worker():
             app.logger.exception('Automatic checkout failed; will retry')
         time.sleep(5)
 
-@app.before_request
-def reconcile_expired():
-    finish_expired_sessions()
 
 @app.before_request
 def load_user():
