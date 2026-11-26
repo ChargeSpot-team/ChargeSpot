@@ -1,0 +1,18 @@
+# Acceptance checklist (Phase 1/2)
+- FR01 register, login, reject wrong password, driver denied admin.
+- FR02 add vehicle, update profile, select demo payment preference.
+- FR03 combine location, connector, min/max price, availability.
+- FR04 book compatible charger, reject overlap, modify, cancel; decline payment must not reserve.
+- FR05 demo card/wallet approval and decline; real gateway not configured.
+- FR06 check in at start, manual checkout, automatic checkout at end, no-show expires after 15 minutes.
+- FR07 compare recorded kWh × booked price with final cost.
+- FR08 confirmation number, QR, in-app notification.
+- FR09 completed history shows energy, timestamps and cost.
+- FR10 create/edit/remove station and charger; historical records retained.
+- FR11 manual status and simulated sensor; out-of-service cancels future bookings and notifies driver.
+- FR12 disable/enable driver; deletion when no history.
+- FR13 daily/weekly/monthly session, energy, duration and revenue reports.
+- NFR01 password hashes, role checks, CSRF; HTTPS verify on Render.
+- NFR02 concurrent booking test; NFR03 download backup and restore on test database.
+- NFR04 load testing not performed; NFR05 responsive browser only; NFR06 simulated status events.
+- Demo map: test simulated location, browser permission denial, distance ordering, and unknown station areas. Email/push delivery is simulated by the in-app inbox. Native app, real gateway and full layered REST design remain outstanding.
