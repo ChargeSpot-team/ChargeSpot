@@ -1,0 +1,1 @@
+{% extends 'base.html' %}{% block content %}<h1>Notifications</h1><p>Demo notification inbox — simulates email and push delivery. No external messages are sent.</p>{% for r in rows %}<section class="panel"><p>{{r.message}}</p><small>{{r.created_at}}</small></section>{% else %}<p>No notifications.</p>{% endfor %}{% endblock %}

@@ -5,3 +5,7 @@ chargespot.db
 venv/
 __pycache__/
 *.pyc
+
+*.backup
+*.db
+__pycache__/
