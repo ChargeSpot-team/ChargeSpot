@@ -91,7 +91,7 @@ def load_user():
     g.user = None
     if session.get('uid'):
         with connect() as db:
-            g.user=db.execute('SELECT id,name,email,role FROM users WHERE id=? AND disabled=0',(session['uid'],)).fetchone()
+            g.user=db.execute('SELECT id,name,email,role FROM users WHERE id=? AND COALESCE(disabled,0)=0',(session['uid'],)).fetchone()
 
 def login_required(fn):
     @wraps(fn)
@@ -172,6 +172,8 @@ def register():
 def login():
     if request.method=='POST':
         with connect() as db: u=db.execute('SELECT * FROM users WHERE email=?',(request.form.get('email','').lower().strip(),)).fetchone()
+        if u and u['disabled']:
+            session.clear(); flash('This account is disabled. Contact the administrator.','danger'); return redirect(url_for('login'))
         if u and not u['disabled'] and check_password_hash(u['password'],request.form.get('password','')):
             session.clear();session['uid']=u['id'];return redirect(url_for('admin' if u['role']=='admin' else 'index'))
         flash('Incorrect email or password.','danger')
@@ -241,7 +243,9 @@ def reservations():
 def cancel(rid):
     with connect() as db:
         cur=db.execute("UPDATE reservations SET status='CANCELLED' WHERE id=? AND user_id=? AND status='CONFIRMED'",(rid,g.user['id']))
-        if cur.rowcount: db.execute("UPDATE payments SET status='REFUNDED' WHERE reservation_id=?",(rid,))
+        if cur.rowcount:
+            db.execute("UPDATE payments SET status='REFUNDED' WHERE reservation_id=?",(rid,))
+            notify(db,g.user['id'],f"Booking #{rid} cancelled. Demo payment refunded.")
     flash('Reservation cancelled.' if cur.rowcount else 'Cannot cancel this reservation.','success' if cur.rowcount else 'danger');return redirect(url_for('reservations'))
 
 @app.route('/reservation/<int:rid>/checkin',methods=['POST'])
@@ -285,10 +289,10 @@ def checkout(rid):
 def admin():
     with connect() as db:
         stations=db.execute('SELECT * FROM stations WHERE archived=0 ORDER BY id').fetchall()
-        chargers=db.execute('SELECT c.*,s.name AS station_name FROM chargers c JOIN stations s ON s.id=c.station_id WHERE c.archived=0 AND s.archived=0 ORDER BY c.id').fetchall()
+        chargers=db.execute('SELECT c.*,s.name AS station_name FROM chargers c JOIN stations s ON s.id=c.station_id WHERE c.archived=0 AND s.archived=0 ORDER BY c.station_id,c.id').fetchall()
         users=db.execute("SELECT id,name,email,disabled FROM users WHERE role='driver'").fetchall()
         stats={'stations':len(stations),'chargers':len(chargers),'drivers':len(users),'reservations':db.execute('SELECT COUNT(*) FROM reservations').fetchone()[0], 'revenue':db.execute("SELECT COALESCE(SUM(amount),0) FROM payments WHERE status='SIMULATED_APPROVED'").fetchone()[0]}
-        recent=db.execute('''SELECT r.id,u.name,s.name AS station_name,r.status,r.amount FROM reservations r JOIN users u ON u.id=r.user_id JOIN chargers c ON c.id=r.charger_id JOIN stations s ON s.id=c.station_id ORDER BY r.id DESC LIMIT 12''').fetchall()
+        recent=db.execute('''SELECT r.id,u.name,s.name AS station_name,r.status,COALESCE(cs.total_cost,r.amount) AS amount FROM reservations r LEFT JOIN charging_sessions cs ON cs.reservation_id=r.id JOIN users u ON u.id=r.user_id JOIN chargers c ON c.id=r.charger_id JOIN stations s ON s.id=c.station_id ORDER BY r.id DESC LIMIT 12''').fetchall()
         reports=report_rows(db)
     return render_template('admin.html',stations=stations,chargers=chargers,users=users,stats=stats,recent=recent,reports=reports)
 
@@ -434,7 +438,7 @@ def edit_charger(cid):
 @app.route('/admin/user/<int:uid>/toggle',methods=['POST'])
 @admin_required
 def toggle_user(uid):
-    with connect() as db: db.execute("UPDATE users SET disabled=1-disabled WHERE id=? AND role='driver'",(uid,))
+    with connect() as db: db.execute("UPDATE users SET disabled=CASE WHEN COALESCE(disabled,0)=0 THEN 1 ELSE 0 END WHERE id=? AND role='driver'",(uid,))
     return redirect(url_for('admin'))
 
 @app.route('/admin/sensor/<int:cid>',methods=['POST'])
